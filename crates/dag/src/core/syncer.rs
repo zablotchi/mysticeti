@@ -8,6 +8,7 @@ use tokio::sync::Notify;
 
 use super::{Core, block_handler::CommitHandler};
 use crate::consensus::{CommittedSubDag, DagConsensus};
+use crate::output::DagOutput;
 use crate::storage::Storage;
 use crate::{
     authority::Authority,
@@ -76,54 +77,66 @@ impl<C: Ctx, D: DagConsensus> Syncer<C, D> {
         }
     }
 
-    /// Add blocks to the core, returning any sub-dags newly committed as a consequence.
+    /// Add blocks to the core, returning those newly connected to the DAG, any resulting
+    /// proposal, and any sub-dags newly committed as a consequence.
     ///
     /// The commit rule runs with every own proposal. For protocols whose fast commit
     /// quorum exceeds the threshold-clock quorum it also runs when the added blocks
     /// complete that quorum at a watched voting round (see [`Core::fast_commit_watch`]):
     /// the fast commit would otherwise wait for the next proposal, a round later.
-    pub fn add_blocks(&mut self, blocks: Vec<Data<Block>>) -> Vec<CommittedSubDag> {
+    pub fn add_blocks(&mut self, blocks: Vec<Data<Block>>) -> DagOutput {
         let _timer = self.metrics.utilization_timer("Syncer::add_blocks");
         let watch = self.core.fast_commit_watch();
-        self.core.add_blocks(blocks);
-        if self.try_propose()
+        let added = self.core.add_blocks(blocks);
+        let proposed = self.try_propose();
+        let committed = if proposed.is_some()
             || watch.is_some_and(|watch| self.core.fast_commit_quorum_crossed(&watch))
         {
             self.commit()
         } else {
             Vec::new()
+        };
+        DagOutput {
+            added,
+            proposed,
+            committed,
         }
     }
 
-    /// Force a new block proposal, returning any sub-dags newly committed as a consequence.
-    pub fn force_new_block(&mut self, round: RoundNumber) -> Vec<CommittedSubDag> {
+    /// Force a new block proposal, returning it and any sub-dags newly committed as a
+    /// consequence.
+    pub fn force_new_block(&mut self, round: RoundNumber) -> DagOutput {
         if self.core.last_proposed() == round {
             self.metrics.inc_leader_timeout();
             self.force_new_block = true;
             self.try_new_block()
         } else {
-            Vec::new()
+            DagOutput::default()
         }
     }
 
-    fn try_new_block(&mut self) -> Vec<CommittedSubDag> {
-        if self.try_propose() {
-            self.commit()
-        } else {
-            Vec::new()
+    fn try_new_block(&mut self) -> DagOutput {
+        let Some(proposed) = self.try_propose() else {
+            return DagOutput::default();
+        };
+        DagOutput {
+            added: Vec::new(),
+            proposed: Some(proposed),
+            committed: self.commit(),
         }
     }
 
-    /// Propose a new block if the core is ready for one; true when a block was proposed.
-    fn try_propose(&mut self) -> bool {
+    /// Propose a new block if the core is ready for one, returning it.
+    fn try_propose(&mut self) -> Option<Data<Block>> {
         let _timer = self.metrics.utilization_timer("Syncer::try_new_block");
         let ready = self.force_new_block || self.core.ready_new_block(&self.connected_authorities);
-        if !ready || self.core.try_new_block().is_none() {
-            return false;
+        if !ready {
+            return None;
         }
+        let proposed = self.core.try_new_block()?;
         self.signals.new_block_ready();
         self.force_new_block = false;
-        true
+        Some(proposed)
     }
 
     /// Run the commit rule and hand the newly committed sub-dags to the commit handler.

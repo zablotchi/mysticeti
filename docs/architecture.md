@@ -95,9 +95,10 @@ Inside that thread, `CoreThread::run` is a `blocking_recv()` loop over an mpsc c
 - **`ForceNewBlock(round)`** — sent by the round-timeout task when the timer fires. The core
   produces a proposal even without a complete quorum.
 
-Both commit-producing commands forward any newly committed sub-dags to the optional commit
-consumer (see [Transaction input and commit output](#transaction-input-and-commit-output))
-**before** acking the caller's oneshot; without a consumer this is a no-op.
+Both commands forward their output — newly committed sub-dags and, for an event consumer, the
+blocks they added to the DAG — to the optional consumer (see
+[Transaction input and commit output](#transaction-input-and-commit-output)) **before** acking
+the caller's oneshot; without a consumer this is a no-op.
 - **`Cleanup`** — periodic, trims committed state.
 - **`GetMissing`** — returns the set of references the DAG is waiting for, used to drive block-fetch
   requests.
@@ -158,7 +159,7 @@ Any tokio task that needs to mutate consensus state calls an async method on `Sy
 [`core/core_thread.rs`](../crates/dag/src/core/core_thread.rs)). Backpressure is implicit: if the
 core thread is slow, the command channel (capacity 32) fills up, and the calling task's `.await`
 stalls — which propagates naturally to the networking buffers (capacity 16 per connection) and
-ultimately to the TCP socket. A configured commit consumer adds one more stage at the front of that
+ultimately to the TCP socket. A configured consumer adds one more stage at the front of that
 chain: when its bounded channel is full, the core thread blocks in `blocking_send` (visible as
 `utilization{scope="CoreThread::forward_commits"}`), so a slow external executor throttles the
 whole replica the same way.
@@ -175,6 +176,12 @@ The replica's external contract is ordered bytes in, ordered bytes out — both 
   `mpsc::Sender<CommittedSubDag>`; every committed sub-dag is emitted in commit order, strictly
   after its WAL write. On restart, commits recovered from the WAL are **not** re-emitted —
   embedders catch up by reading `Storage::iter_commits` before subscribing to new commits.
+  Embedders that act on blocks before they commit pass `DagConsumer::Events` to
+  `ReplicaBuilder::with_consumer` instead: one bounded `mpsc::Sender<DagEvent>` carrying every
+  block as it enters the local DAG (received once its causal history is local, or proposed) and
+  every commit, in one stream. A block arrives after the blocks it includes and before any commit
+  containing it; genesis blocks and blocks recovered from the WAL are never streamed. A single
+  stream keeps blocks and commits from deadlocking on each other's channel.
 
 ## Storage: the Custom WAL
 

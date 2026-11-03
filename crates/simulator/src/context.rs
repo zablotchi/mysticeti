@@ -8,9 +8,10 @@ use tokio::sync::{mpsc, oneshot};
 
 use super::event_simulator::{Scheduler, simulator_time};
 use super::executor::{ExecutorStateEvent, JoinError, JoinHandle, Sleep, simulator_spawn};
-use dag::consensus::{CommittedSubDag, DagConsensus};
+use dag::consensus::DagConsensus;
 use dag::context::Ctx;
 use dag::core::syncer::Syncer;
+use dag::output::DagConsumer;
 use dag::storage::WalSyncer;
 
 use super::dispatcher::InlineDispatcher;
@@ -122,9 +123,9 @@ impl Ctx for SimulatorContext {
 
     fn create_dispatcher<D: DagConsensus>(
         syncer: Syncer<Self, D>,
-        commit_consumer: Option<mpsc::Sender<CommittedSubDag>>,
+        consumer: Option<DagConsumer>,
     ) -> Self::Dispatcher<D> {
-        InlineDispatcher::new(syncer, commit_consumer)
+        InlineDispatcher::new(syncer, consumer)
     }
 
     fn start_wal_syncer(_wal_syncer: WalSyncer, _stop: mpsc::Sender<()>) -> oneshot::Receiver<()> {

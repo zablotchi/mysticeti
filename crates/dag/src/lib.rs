@@ -13,6 +13,7 @@ pub mod consensus;
 pub mod context;
 pub mod core;
 pub mod metrics;
+pub mod output;
 pub(crate) use storage::state;
 pub mod storage;
 pub mod sync;

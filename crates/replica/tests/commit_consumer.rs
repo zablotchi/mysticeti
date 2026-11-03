@@ -11,6 +11,7 @@ use dag::{
     block::{BlockReference, transaction::Transaction},
     context::TokioCtx,
     metrics::Metrics,
+    output::DagConsumer,
 };
 use replica::{
     config::LoadGeneratorConfig,
@@ -42,7 +43,8 @@ async fn await_commits(metrics: &Arc<Metrics>, target: u64) {
 async fn submit_to_commit_round_trip() {
     const BATCHES_PER_CLIENT: usize = 5;
     let (sender, mut receiver) = mpsc::channel(1024);
-    let (replicas, _metrics) = Replica::new_committee_for_test(4, 400, Some(sender));
+    let (replicas, _metrics) =
+        Replica::new_committee_for_test(4, 400, Some(DagConsumer::Commits(sender)));
     let mut handles = run_all(replicas).await;
 
     for client in [
@@ -87,7 +89,8 @@ async fn slow_consumer_throttles_replica_without_deadlock() {
     // The committee's own progress defines the observation windows; no fixed settle sleeps.
     const WINDOW: u64 = 5;
     let (sender, mut receiver) = mpsc::channel(1);
-    let (replicas, metrics) = Replica::new_committee_for_test(4, 500, Some(sender));
+    let (replicas, metrics) =
+        Replica::new_committee_for_test(4, 500, Some(DagConsumer::Commits(sender)));
     let mut handles = run_all(replicas).await;
     for handle in &mut handles {
         // Detach: the generator runs until the replica shuts down.

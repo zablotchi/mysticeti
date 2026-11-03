@@ -5,9 +5,10 @@ use std::{fmt::Debug, future::Future, time::Duration};
 
 use tokio::sync::{mpsc, oneshot};
 
-use crate::consensus::{CommittedSubDag, DagConsensus};
+use crate::consensus::DagConsensus;
 use crate::core::core_thread::{CoreDispatch, ThreadedDispatcher};
 use crate::core::syncer::Syncer;
+use crate::output::DagConsumer;
 use crate::storage::WalSyncer;
 
 pub trait Ctx: Sized + Send + Sync + 'static {
@@ -34,7 +35,7 @@ pub trait Ctx: Sized + Send + Sync + 'static {
     type Dispatcher<D: DagConsensus>: CoreDispatch<Self, D>;
     fn create_dispatcher<D: DagConsensus>(
         syncer: Syncer<Self, D>,
-        commit_consumer: Option<mpsc::Sender<CommittedSubDag>>,
+        consumer: Option<DagConsumer>,
     ) -> Self::Dispatcher<D>;
 
     fn start_wal_syncer(wal_syncer: WalSyncer, stop: mpsc::Sender<()>) -> oneshot::Receiver<()>;
@@ -90,9 +91,9 @@ impl Ctx for TokioCtx {
 
     fn create_dispatcher<D: DagConsensus>(
         syncer: Syncer<Self, D>,
-        commit_consumer: Option<mpsc::Sender<CommittedSubDag>>,
+        consumer: Option<DagConsumer>,
     ) -> Self::Dispatcher<D> {
-        ThreadedDispatcher::new(syncer, commit_consumer)
+        ThreadedDispatcher::new(syncer, consumer)
     }
 
     fn start_wal_syncer(wal_syncer: WalSyncer, stop: mpsc::Sender<()>) -> oneshot::Receiver<()> {

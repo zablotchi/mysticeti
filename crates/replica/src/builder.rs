@@ -5,7 +5,8 @@ use std::{path::PathBuf, sync::Arc};
 
 use ::prometheus::Registry;
 use dag::{
-    authority::Authority, consensus::CommittedSubDag, metrics::Metrics, sync::network::Network,
+    authority::Authority, consensus::CommittedSubDag, metrics::Metrics, output::DagConsumer,
+    sync::network::Network,
 };
 use tokio::sync::mpsc;
 
@@ -33,7 +34,7 @@ pub struct ReplicaBuilder {
     metrics: Option<Arc<Metrics>>,
     network: Option<Network>,
     registry: Registry,
-    commit_consumer: Option<mpsc::Sender<CommittedSubDag>>,
+    consumer: Option<DagConsumer>,
 }
 
 impl ReplicaBuilder {
@@ -52,7 +53,7 @@ impl ReplicaBuilder {
             metrics: None,
             network: None,
             registry: Registry::new(),
-            commit_consumer: None,
+            consumer: None,
         }
     }
 
@@ -94,8 +95,14 @@ impl ReplicaBuilder {
     /// written to the WAL. The channel must be bounded: a slow receiver throttles the whole
     /// replica rather than dropping or reordering commits. On restart, commits recovered
     /// from the WAL are not re-emitted; catch up via `Storage::iter_commits` first.
-    pub fn with_commit_consumer(mut self, sender: mpsc::Sender<CommittedSubDag>) -> Self {
-        self.commit_consumer = Some(sender);
+    pub fn with_commit_consumer(self, sender: mpsc::Sender<CommittedSubDag>) -> Self {
+        self.with_consumer(DagConsumer::Commits(sender))
+    }
+
+    /// Stream the replica's output into `consumer`, replacing any previous one: a replica
+    /// feeds a single stream, so its blocks and commits never wait on separate channels.
+    pub fn with_consumer(mut self, consumer: DagConsumer) -> Self {
+        self.consumer = Some(consumer);
         self
     }
 
@@ -111,7 +118,7 @@ impl ReplicaBuilder {
             metrics: self.metrics,
             network: self.network,
             registry: self.registry,
-            commit_consumer: self.commit_consumer,
+            consumer: self.consumer,
         }
     }
 }

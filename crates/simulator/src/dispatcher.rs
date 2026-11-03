@@ -3,45 +3,38 @@
 
 use std::collections::HashSet;
 
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::Mutex;
 
 use dag::{
     authority::Authority,
     block::{Block, BlockReference, RoundNumber},
-    consensus::{CommittedSubDag, DagConsensus},
+    consensus::DagConsensus,
     core::{core_thread::CoreDispatch, syncer::Syncer},
     data::Data,
+    output::{DagConsumer, DagOutput},
 };
 
 use crate::context::SimulatorContext;
 
 pub struct InlineDispatcher<D: DagConsensus> {
     syncer: Mutex<Syncer<SimulatorContext, D>>,
-    commit_consumer: Option<mpsc::Sender<CommittedSubDag>>,
+    consumer: Option<DagConsumer>,
 }
 
 impl<D: DagConsensus> InlineDispatcher<D> {
-    pub fn new(
-        syncer: Syncer<SimulatorContext, D>,
-        commit_consumer: Option<mpsc::Sender<CommittedSubDag>>,
-    ) -> Self {
+    pub fn new(syncer: Syncer<SimulatorContext, D>, consumer: Option<DagConsumer>) -> Self {
         Self {
             syncer: Mutex::new(syncer),
-            commit_consumer,
+            consumer,
         }
     }
 
-    /// Forward newly committed sub-dags to the consumer. Awaited while the caller still
-    /// holds the syncer lock, so the consumer observes commits in commit order and a full
-    /// consumer suspends the producing task (backpressure).
-    async fn forward_commits(&self, committed: Vec<CommittedSubDag>) {
-        let Some(consumer) = &self.commit_consumer else {
-            return;
-        };
-        for subdag in committed {
-            if consumer.send(subdag).await.is_err() {
-                return;
-            }
+    /// Forward a step's output to the consumer. Awaited while the caller still holds the
+    /// syncer lock, so the consumer observes it in order and a full consumer suspends the
+    /// producing task (backpressure).
+    async fn forward(&self, output: DagOutput) {
+        if let Some(consumer) = &self.consumer {
+            consumer.send(output).await.ok();
         }
     }
 }
@@ -49,14 +42,14 @@ impl<D: DagConsensus> InlineDispatcher<D> {
 impl<D: DagConsensus> CoreDispatch<SimulatorContext, D> for InlineDispatcher<D> {
     async fn add_blocks(&self, blocks: Vec<Data<Block>>) {
         let mut syncer = self.syncer.lock().await;
-        let committed = syncer.add_blocks(blocks);
-        self.forward_commits(committed).await;
+        let output = syncer.add_blocks(blocks);
+        self.forward(output).await;
     }
 
     async fn force_new_block(&self, round: RoundNumber) {
         let mut syncer = self.syncer.lock().await;
-        let committed = syncer.force_new_block(round);
-        self.forward_commits(committed).await;
+        let output = syncer.force_new_block(round);
+        self.forward(output).await;
     }
 
     async fn cleanup(&self) {

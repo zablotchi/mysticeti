@@ -246,8 +246,9 @@ deterministic in the `rng_seed`, these tests are reproducible across machines.
 For finer control than `SimulationRunner` offers — external transaction submission via
 `TransactionClient` and live commit streaming via `ReplicaBuilder::with_commit_consumer` —
 tests can build the committee directly with `SimulatedNetwork::new_for_test` (or
-`new_for_test_with_commit_consumers`), as
-[`crates/simulator/tests/commit_consumer.rs`](../crates/simulator/tests/commit_consumer.rs) does.
+`new_for_test_with_consumers`), as
+[`crates/simulator/tests/commit_consumer.rs`](../crates/simulator/tests/commit_consumer.rs) and
+[`crates/simulator/tests/event_consumer.rs`](../crates/simulator/tests/event_consumer.rs) do.
 One rule applies: **any task that awaits replica channels (submitters, commit collectors) must run
 inside the simulated world**, spawned via `SimulatorContext::spawn` — awaiting from outside the
 executor deadlocks the run. Determinism extends to the consumer streams: identical seeds yield

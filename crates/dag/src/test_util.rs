@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::{
+    collections::HashSet,
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     sync::Arc,
 };
@@ -11,13 +12,14 @@ use rand::{SeedableRng, rngs::StdRng};
 
 use crate::{
     authority::Authority,
-    block::{Block, BlockReference, RoundNumber},
+    block::{Block, BlockReference, GENESIS_ROUND, RoundNumber},
     committee::Committee,
     consensus::DagConsensus,
     context::Ctx,
     core::syncer::Syncer,
     data::Data,
     metrics::Metrics,
+    output::DagEvent,
     storage::Storage,
     sync::network::Network,
 };
@@ -73,6 +75,42 @@ pub fn check_commits<C: Ctx, D: DagConsensus>(syncers: &[Syncer<C, D>]) {
         }
     }
     eprintln!("Max commit sequence: {max_commit:?}");
+}
+
+/// Assert the ordering contract of a [`DagEvent`] stream: every non-genesis block is streamed
+/// once, after the blocks it includes, and before any commit containing it.
+pub fn check_event_stream(events: &[DagEvent]) {
+    let known = |reference: &BlockReference, streamed: &HashSet<BlockReference>| {
+        reference.round == GENESIS_ROUND || streamed.contains(reference)
+    };
+    let mut streamed = HashSet::new();
+    for event in events {
+        match event {
+            DagEvent::Block(block) => {
+                let reference = block.reference();
+                assert_ne!(
+                    reference.round, GENESIS_ROUND,
+                    "genesis {reference} streamed"
+                );
+                for include in block.includes() {
+                    assert!(
+                        known(include, &streamed),
+                        "{reference} streamed before its include {include}"
+                    );
+                }
+                assert!(streamed.insert(*reference), "{reference} streamed twice");
+            }
+            DagEvent::Commit(subdag) => {
+                for block in &subdag.blocks {
+                    assert!(
+                        known(block.reference(), &streamed),
+                        "{} committed before being streamed",
+                        block.reference()
+                    );
+                }
+            }
+        }
+    }
 }
 
 pub fn build_dag(

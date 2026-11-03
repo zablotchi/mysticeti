@@ -13,10 +13,10 @@ use consensus::committer::Committer;
 use dag::{
     authority::Authority,
     config::{ConfigError, ImportExport},
-    consensus::CommittedSubDag,
     context::Ctx,
     core::syncer::Syncer,
     metrics::Metrics,
+    output::DagConsumer,
     storage::Storage,
 };
 use rand::{SeedableRng, rngs::StdRng};
@@ -26,7 +26,7 @@ use replica::{
     replica::ReplicaHandle,
     result::{MetricsSample, RunKind, RunResult},
 };
-use tokio::{select, sync::mpsc};
+use tokio::select;
 
 use crate::{
     config::{NetworkTopology, SimulationConfig},
@@ -106,19 +106,18 @@ impl SimulatedNetwork {
     pub async fn new_for_test(
         committee_size: usize,
     ) -> (Self, Vec<ReplicaHandle<SimulatorContext>>) {
-        Self::new_for_test_with_commit_consumers(vec![None; committee_size]).await
+        Self::new_for_test_with_consumers(vec![None; committee_size]).await
     }
 
-    /// Like [`SimulatedNetwork::new_for_test`], with one optional commit consumer per
-    /// replica.
+    /// Like [`SimulatedNetwork::new_for_test`], with one optional consumer per replica.
     #[cfg(any(test, feature = "test-utils"))]
-    pub async fn new_for_test_with_commit_consumers(
-        commit_consumers: Vec<Option<mpsc::Sender<CommittedSubDag>>>,
+    pub async fn new_for_test_with_consumers(
+        consumers: Vec<Option<DagConsumer>>,
     ) -> (Self, Vec<ReplicaHandle<SimulatorContext>>) {
-        let public_config = PublicReplicaConfig::new_for_tests(commit_consumers.len());
+        let public_config = PublicReplicaConfig::new_for_tests(consumers.len());
         let latency = LatencyModel::default();
         let (network, replicas, _, _) =
-            SimulationState::build_replicas(public_config, latency, None, commit_consumers).await;
+            SimulationState::build_replicas(public_config, latency, None, consumers).await;
         network.connect_all().await;
         (network, replicas)
     }
@@ -126,13 +125,13 @@ impl SimulatedNetwork {
 
 impl SimulationState {
     /// Build a committee of simulated replicas wired through a [`SimulatedNetwork`]. The
-    /// committee is derived from `public_config`; `commit_consumers` holds one optional
-    /// consumer per replica.
+    /// committee is derived from `public_config`; `consumers` holds one optional consumer per
+    /// replica.
     async fn build_replicas(
         public_config: PublicReplicaConfig,
         latency: LatencyModel,
         load_generator: Option<LoadGeneratorConfig>,
-        commit_consumers: Vec<Option<mpsc::Sender<CommittedSubDag>>>,
+        consumers: Vec<Option<DagConsumer>>,
     ) -> (
         SimulatedNetwork,
         Vec<ReplicaHandle<SimulatorContext>>,
@@ -141,7 +140,7 @@ impl SimulationState {
     ) {
         let committee = public_config.committee();
         let committee_size = committee.len();
-        assert_eq!(commit_consumers.len(), committee_size);
+        assert_eq!(consumers.len(), committee_size);
         let (network, networks) = SimulatedNetwork::new(&committee, latency);
 
         // The simulator doesn't touch disk; the WAL path in the private
@@ -153,10 +152,10 @@ impl SimulationState {
         let mut load_generators = Vec::new();
         let mut metrics_handles = Vec::with_capacity(committee_size);
         let latency_buckets = latency_buckets();
-        for (i, ((node_network, private_config), commit_consumer)) in networks
+        for (i, ((node_network, private_config), consumer)) in networks
             .into_iter()
             .zip(private_configs)
-            .zip(commit_consumers)
+            .zip(consumers)
             .enumerate()
         {
             let authority = Authority::from(i);
@@ -168,8 +167,8 @@ impl SimulationState {
                 .with_simulated_crypto()
                 .with_metrics(metrics)
                 .with_network(node_network);
-            if let Some(commit_consumer) = commit_consumer {
-                builder = builder.with_commit_consumer(commit_consumer);
+            if let Some(consumer) = consumer {
+                builder = builder.with_consumer(consumer);
             }
             let mut handle = builder
                 .build()
@@ -192,12 +191,12 @@ impl SimulationState {
             .consensus
             .to_protocol(&public_config.committee())
             .expect("invalid consensus protocol");
-        let commit_consumers = vec![None; config.committee_size];
+        let consumers = vec![None; config.committee_size];
         let (network, replicas, load_generators, metrics) = Self::build_replicas(
             public_config,
             config.latency.clone(),
             config.load_generator.clone(),
-            commit_consumers,
+            consumers,
         )
         .await;
         // Connections are only wired in `apply_topology`, so the shim sees every link.

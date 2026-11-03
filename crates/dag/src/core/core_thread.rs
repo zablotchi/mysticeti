@@ -9,10 +9,11 @@ use super::syncer::Syncer;
 use crate::{
     authority::Authority,
     block::{Block, BlockReference, RoundNumber},
-    consensus::{CommittedSubDag, DagConsensus},
+    consensus::DagConsensus,
     context::Ctx,
     data::Data,
     metrics::Metrics,
+    output::{DagConsumer, DagOutput},
 };
 
 pub trait CoreDispatch<C: Ctx, D: DagConsensus>: Send + Sync {
@@ -49,16 +50,13 @@ pub struct ThreadedDispatcher<C: Ctx, D: DagConsensus> {
 }
 
 impl<C: Ctx, D: DagConsensus> ThreadedDispatcher<C, D> {
-    pub fn new(
-        syncer: Syncer<C, D>,
-        commit_consumer: Option<mpsc::Sender<CommittedSubDag>>,
-    ) -> Self {
+    pub fn new(syncer: Syncer<C, D>, consumer: Option<DagConsumer>) -> Self {
         let (sender, receiver) = mpsc::channel(32);
         let metrics = syncer.core().metrics.clone();
         let core_thread = CoreThread {
             syncer,
             receiver,
-            commit_consumer,
+            consumer,
         };
         let join_handle = thread::Builder::new()
             .name("dag".to_string())
@@ -124,7 +122,7 @@ impl<C: Ctx, D: DagConsensus> CoreDispatch<C, D> for ThreadedDispatcher<C, D> {
 struct CoreThread<C: Ctx, D: DagConsensus> {
     syncer: Syncer<C, D>,
     receiver: mpsc::Receiver<CoreThreadCommand>,
-    commit_consumer: Option<mpsc::Sender<CommittedSubDag>>,
+    consumer: Option<DagConsumer>,
 }
 
 impl<C: Ctx, D: DagConsensus> CoreThread<C, D> {
@@ -136,13 +134,13 @@ impl<C: Ctx, D: DagConsensus> CoreThread<C, D> {
             metrics.inc_core_lock_dequeued();
             match command {
                 CoreThreadCommand::AddBlocks(blocks, sender) => {
-                    let committed = self.syncer.add_blocks(blocks);
-                    self.forward_commits(committed);
+                    let output = self.syncer.add_blocks(blocks);
+                    self.forward(output);
                     sender.send(()).ok();
                 }
                 CoreThreadCommand::ForceNewBlock(round, sender) => {
-                    let committed = self.syncer.force_new_block(round);
-                    self.forward_commits(committed);
+                    let output = self.syncer.force_new_block(round);
+                    self.forward(output);
                     sender.send(()).ok();
                 }
                 CoreThreadCommand::Cleanup(sender) => {
@@ -166,14 +164,14 @@ impl<C: Ctx, D: DagConsensus> CoreThread<C, D> {
         self.syncer
     }
 
-    /// Forward newly committed sub-dags to the consumer before acking the caller. Blocks the
-    /// core thread when the consumer is full, throttling the whole replica (backpressure);
-    /// blocked time is visible as `utilization{scope="CoreThread::forward_commits"}`.
-    fn forward_commits(&mut self, committed: Vec<CommittedSubDag>) {
-        let Some(consumer) = &self.commit_consumer else {
+    /// Forward a step's output to the consumer before acking the caller. Blocks the core
+    /// thread when the consumer is full, throttling the whole replica (backpressure); blocked
+    /// time is visible as `utilization{scope="CoreThread::forward_commits"}`.
+    fn forward(&mut self, output: DagOutput) {
+        let Some(consumer) = &self.consumer else {
             return;
         };
-        if committed.is_empty() {
+        if !consumer.streams(&output) {
             return;
         }
         let _timer = self
@@ -181,12 +179,9 @@ impl<C: Ctx, D: DagConsensus> CoreThread<C, D> {
             .core()
             .metrics
             .utilization_timer("CoreThread::forward_commits");
-        for subdag in committed {
-            if consumer.blocking_send(subdag).is_err() {
-                tracing::warn!("Commit consumer dropped; halting commit forwarding");
-                self.commit_consumer = None;
-                return;
-            }
+        if consumer.blocking_send(output).is_err() {
+            tracing::warn!("DAG consumer dropped; halting forwarding");
+            self.consumer = None;
         }
     }
 }

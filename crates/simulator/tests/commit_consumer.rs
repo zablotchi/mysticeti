@@ -10,6 +10,7 @@ use dag::{
     block::{BlockReference, transaction::Transaction},
     consensus::CommittedSubDag,
     context::Ctx,
+    output::DagConsumer,
 };
 use replica::replica::ReplicaHandle;
 use simulator::{SimulatedNetwork, SimulatorContext, SimulatorExecutor};
@@ -27,7 +28,7 @@ fn run_once(seed: u64, committee_size: usize) -> Vec<Vec<ObservedCommit>> {
         let mut collectors = Vec::with_capacity(committee_size);
         for _ in 0..committee_size {
             let (sender, mut receiver) = mpsc::channel::<CommittedSubDag>(1024);
-            senders.push(Some(sender));
+            senders.push(Some(DagConsumer::Commits(sender)));
             collectors.push(SimulatorContext::spawn(async move {
                 let mut observed: Vec<ObservedCommit> = vec![];
                 while let Some(subdag) = receiver.recv().await {
@@ -42,8 +43,7 @@ fn run_once(seed: u64, committee_size: usize) -> Vec<Vec<ObservedCommit>> {
             }));
         }
 
-        let (_network, replicas) =
-            SimulatedNetwork::new_for_test_with_commit_consumers(senders).await;
+        let (_network, replicas) = SimulatedNetwork::new_for_test_with_consumers(senders).await;
         let submitters: Vec<_> = replicas
             .iter()
             .map(|handle| {

@@ -13,7 +13,7 @@ use crate::{
     authority::Authority,
     committee::Committee,
     committee::Stake,
-    consensus::{CommittedSubDag, DagConsensus},
+    consensus::DagConsensus,
     context::Ctx,
     core::{
         Core,
@@ -23,6 +23,7 @@ use crate::{
     },
     crypto::CryptoVerifier,
     metrics::Metrics,
+    output::{DagConsumer, DagOutput},
     storage::BlockReader,
     sync::{
         network::{Connection, Network, NetworkMessage},
@@ -59,7 +60,7 @@ impl<C: Ctx, D: DagConsensus> NetworkSyncer<C, D> {
         enable_synchronizer: bool,
         mut commit_handler: CommitHandler<C>,
         metrics: Arc<Metrics>,
-        commit_consumer: Option<mpsc::Sender<CommittedSubDag>>,
+        consumer: Option<DagConsumer>,
     ) -> Self {
         let authority_index = core.authority();
         let notify = Arc::new(Notify::new());
@@ -76,8 +77,8 @@ impl<C: Ctx, D: DagConsensus> NetworkSyncer<C, D> {
             commit_handler,
             metrics.clone(),
         );
-        let startup_commits = syncer.force_new_block(0);
-        let syncer = C::create_dispatcher(syncer, commit_consumer.clone());
+        let startup_output = syncer.force_new_block(0);
+        let syncer = C::create_dispatcher(syncer, consumer.clone());
         let (stop_sender, stop_receiver) = mpsc::channel(1);
         // Occupy the only available permit, so that all
         // other calls to send() will block.
@@ -103,8 +104,8 @@ impl<C: Ctx, D: DagConsensus> NetworkSyncer<C, D> {
             inner.clone(),
             block_fetcher,
             metrics.clone(),
-            startup_commits,
-            commit_consumer,
+            startup_output,
+            consumer,
         ));
         let syncer_task = C::start_wal_syncer(wal_syncer, stop_sender);
         Self {
@@ -131,18 +132,16 @@ impl<C: Ctx, D: DagConsensus> NetworkSyncer<C, D> {
         inner: Arc<NetworkSyncerInner<C, D>>,
         block_fetcher: Arc<BlockFetcher<C>>,
         metrics: Arc<Metrics>,
-        startup_commits: Vec<CommittedSubDag>,
-        commit_consumer: Option<mpsc::Sender<CommittedSubDag>>,
+        startup_output: DagOutput,
+        consumer: Option<DagConsumer>,
     ) {
         // The startup proposal runs on the raw syncer before the dispatcher exists, so its
-        // recovery-time commits are forwarded here instead. The consumer channel closes only
-        // once both this sender clone and the dispatcher's are dropped (after shutdown).
-        if let Some(consumer) = &commit_consumer {
-            for subdag in startup_commits {
-                if consumer.send(subdag).await.is_err() {
-                    break;
-                }
-            }
+        // output is forwarded here instead. The consumer channel closes only once both this
+        // consumer clone and the dispatcher's are dropped (after shutdown).
+        if let Some(consumer) = &consumer {
+            consumer.send(startup_output).await.ok();
+        } else {
+            drop(startup_output);
         }
 
         let mut connections: HashMap<usize, C::JoinHandle<Option<()>>> = HashMap::new();
