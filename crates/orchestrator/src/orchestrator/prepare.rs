@@ -70,10 +70,12 @@ impl<P: ProtocolCommands + ProtocolMetrics> Orchestrator<P> {
         // Update all active instances. This requires compiling the codebase in release (which
         // may take a long time) so we run the command in the background to avoid keeping alive
         // many ssh connections for too long.
+        // Check out exactly what was fetched (a branch, tag, or full commit hash): the clone
+        // starts on the default branch, so branching from HEAD would build that instead.
         let commit = &self.settings.repository.commit;
         let command = [
             &format!("git fetch origin {commit}"),
-            &format!("(git checkout -b {commit} || git checkout -f origin/{commit})"),
+            "git checkout -f FETCH_HEAD",
             "source $HOME/.cargo/env",
             "RUSTFLAGS=-Ctarget-cpu=native cargo build --release",
         ]

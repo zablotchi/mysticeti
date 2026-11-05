@@ -27,7 +27,7 @@ pub struct Repository {
     /// The url of the repository.
     #[serde_as(as = "DisplayFromStr")]
     pub url: Url,
-    /// The commit (or branch name) to deploy.
+    /// The branch, tag, or full commit hash to deploy (a short hash cannot be fetched).
     pub commit: String,
 }
 
